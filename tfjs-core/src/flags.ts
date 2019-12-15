@@ -68,3 +68,22 @@ ENV.registerFlag('DEPRECATION_WARNINGS_ENABLED', () => true);
 
 /** True if running unit tests. */
 ENV.registerFlag('IS_TEST', () => false);
+
+
+/** Determines if machine is little endian so we can optimize some operations */
+ENV.registerFlag('LITTLE_ENDIAN', () => {
+  const uInt32 = new Uint32Array([0x11223344]);
+  const uInt8 = new Uint8Array(uInt32.buffer);
+  let littleEndian = true;
+
+  if (uInt8[0] === 0x44) {
+    littleEndian = true;
+  } else if (uInt8[0] === 0x11) {
+    // Big Endian.
+    littleEndian = false;
+  } else {
+    // Neither.
+    littleEndian = false;
+  }
+  return littleEndian;
+});

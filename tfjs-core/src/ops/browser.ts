@@ -16,6 +16,7 @@
  */
 
 import {ENGINE} from '../engine';
+import {env} from '@tensorflow/tfjs-core';
 import {getKernel} from '../kernel_registry';
 import {Tensor, Tensor2D, Tensor3D} from '../tensor';
 import {convertToTensor} from '../tensor_util_env';
@@ -147,6 +148,18 @@ function fromPixels_(
   return tensor3d(values, outShape, 'int32');
 }
 
+
+/**
+ *  Multiplies part of an Array by a desired Number for a given range from the
+ *  start position.
+ */
+function multiplier(data, start, multiplier, depth) {
+  for (let n = 0; n < depth; n++) {
+    data[start] *= multiplier;
+    start++;
+  }
+}
+
 /**
  * Draws a `tf.Tensor` of pixel values to a byte array or optionally a
  * canvas.
@@ -168,17 +181,22 @@ function fromPixels_(
 export async function toPixels(
     img: Tensor2D|Tensor3D|TensorLike,
     canvas?: HTMLCanvasElement): Promise<Uint8ClampedArray> {
+
   let $img = convertToTensor(img, 'img', 'toPixels');
+
   if (!(img instanceof Tensor)) {
     // Assume int32 if user passed a native array.
     $img = $img.toInt();
   }
+
   if ($img.rank !== 2 && $img.rank !== 3) {
     throw new Error(
         `toPixels only supports rank 2 or 3 tensors, got rank ${$img.rank}.`);
   }
+
   const [height, width] = $img.shape.slice(0, 2);
   const depth = $img.rank === 2 ? 1 : $img.shape[2];
+  const size = width * height * (depth + 1);
 
   if (depth > 4 || depth === 2) {
     throw new Error(
@@ -196,6 +214,7 @@ export async function toPixels(
   const max = maxVals[0];
   minTensor.dispose();
   maxTensor.dispose();
+
   if ($img.dtype === 'float32') {
     if (min < 0 || max > 1) {
       throw new Error(
@@ -213,45 +232,110 @@ export async function toPixels(
         `Unsupported type for toPixels: ${$img.dtype}.` +
         ` Please use float32 or int32 tensors.`);
   }
+
   const multiplier = $img.dtype === 'float32' ? 255 : 1;
   const bytes = new Uint8ClampedArray(width * height * 4);
 
-  for (let i = 0; i < height * width; ++i) {
-    let r, g, b, a;
-    if (depth === 1) {
-      r = data[i] * multiplier;
-      g = data[i] * multiplier;
-      b = data[i] * multiplier;
-      a = 255;
-    } else if (depth === 3) {
-      r = data[i * 3] * multiplier;
-      g = data[i * 3 + 1] * multiplier;
-      b = data[i * 3 + 2] * multiplier;
-      a = 255;
-    } else if (depth === 4) {
-      r = data[i * 4] * multiplier;
-      g = data[i * 4 + 1] * multiplier;
-      b = data[i * 4 + 2] * multiplier;
-      a = data[i * 4 + 3] * multiplier;
-    }
+  // If device is little endian we can perform an optimized creation of pixels.
+  if (env().get('LITTLE_ENDIAN')) {
+    const buf = new ArrayBuffer(size);
+    const buf8 = new Uint8ClampedArray(buf);
+    const data32 = new Uint32Array(buf);
 
-    const j = i * 4;
-    bytes[j + 0] = Math.round(r);
-    bytes[j + 1] = Math.round(g);
-    bytes[j + 2] = Math.round(b);
-    bytes[j + 3] = Math.round(a);
+    var heightCount = 0;
+    var widthCount = 0;
+
+    for (var i = 0; i < size; i++) {
+      if (heightCount === width) {
+        heightCount = 0;
+        widthCount++;
+      }
+
+      if (depth === 1) {
+        if (multiplier === 255) {
+          multiply(data, i, multiplier, depth);
+        }
+        data32[widthCount * width + heightCount] =
+            (255 << 24) |     // Alpha.
+            (data[i] << 16) | // Blue.
+            (data[i] << 8) |  // Green.
+            data[i];          // Red.
+      } else if (depth === 3) {
+        if (multiplier === 255) {
+          multiply(data, i, multiplier, depth);
+        }
+        data32[widthCount * width + heightCount] =
+            (255 << 24) |
+            (data[i + 2] << 16) |
+            (data[i + 1] << 8) |
+            data[i];
+        // Increment through the green and blue channels.
+        i += 2;
+      } else if (depth === 4) {
+        if (multiplier === 255) {
+          multiply(data, i, multiplier, depth);
+        }
+        data32[widthCount * width + heightCount] =
+            (data[i + 3] << 24) |
+            (data[i + 2] << 16) |
+            (data[i + 1] << 8) |
+            data[i];
+        // Increment through the green. blue, and alpha channels.
+        i += 3;
+      }
+
+      heightCount++;
+    }
+  } else {
+    for (let i = 0; i < height * width; ++i) {
+      let r, g, b, a;
+
+      if (depth === 1) {
+        r = data[i] * multiplier;
+        g = data[i] * multiplier;
+        b = data[i] * multiplier;
+        a = 255;
+      } else if (depth === 3) {
+        r = data[i * 3] * multiplier;
+        g = data[i * 3 + 1] * multiplier;
+        b = data[i * 3 + 2] * multiplier;
+        a = 255;
+      } else if (depth === 4) {
+        r = data[i * 4] * multiplier;
+        g = data[i * 4 + 1] * multiplier;
+        b = data[i * 4 + 2] * multiplier;
+        a = data[i * 4 + 3] * multiplier;
+      }
+
+      const j = i * 4;
+      bytes[j + 0] = Math.round(r);
+      bytes[j + 1] = Math.round(g);
+      bytes[j + 2] = Math.round(b);
+      bytes[j + 3] = Math.round(a);
+    }
   }
+
 
   if (canvas != null) {
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext('2d');
-    const imageData = new ImageData(bytes, width, height);
+    let imageData = undefined;
+
+    if (multiplier === 1) {
+      imageData = ctx.getImageData(0, 0, imgWidth, imgHeight);
+      imageData.data.set(buf8);
+    } else {
+      imageData = new ImageData(bytes, width, height);
+    }
+
     ctx.putImageData(imageData, 0, 0);
   }
+
   if ($img !== img) {
     $img.dispose();
   }
+
   return bytes;
 }
 
