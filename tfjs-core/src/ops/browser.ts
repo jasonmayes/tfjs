@@ -152,6 +152,10 @@ function fromPixels_(
 /**
  *  Multiplies part of an Array by a desired Number for a given range from the
  *  start position.
+ * @param Array data The array we wish to manipulate.
+ * @param Number start The starting index.
+ * @param Number multiplier The amount we want to multiply by.
+ * @param Number depth How many numbers we want to multiply from our starting index.
  */
 function multiplier(data, start, multiplier, depth) {
   for (let n = 0; n < depth; n++) {
